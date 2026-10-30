@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pipeline Live Monitor</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1d2330;--mute:#667085;--line:#e4e7ec;--ok:#12805c;--okbg:#e7f6ef;
+--bad:#c4320a;--badbg:#fdecea;--warn:#a15c07;--warnbg:#fef4e2;--run:#1f5fbf;--runbg:#e8f0fc;--na:#667085;--nabg:#f0f1f4;
+--uns:#6b4fbb;--unsbg:#f0ecfb}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1218;--card:#171b23;--ink:#e6e9ef;--mute:#98a2b3;--line:#2a303b;
+--ok:#4cc38a;--okbg:#14291f;--bad:#ff7a59;--badbg:#341a14;--warn:#f0b452;--warnbg:#33270f;--run:#6ea8ff;--runbg:#15233a;
+--na:#98a2b3;--nabg:#1f242d;--uns:#b49cff;--unsbg:#231d38}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:baseline;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
+h1{font-size:17px;margin:0}h2{font-size:15px;margin:0 0 10px}h3{font-size:13px;margin:12px 0 6px;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}
+main{max-width:1280px;margin:0 auto;padding:14px 16px 40px;display:grid;gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;min-width:0}
+.mute{color:var(--mute)}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
+.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;white-space:nowrap}
+.pass,.ok,.success,.completed,.judged,.done{color:var(--ok);background:var(--okbg)}
+.fail,.failed,.failure,.cancelled,.not-run{color:var(--bad);background:var(--badbg)}
+.partial,.warn{color:var(--warn);background:var(--warnbg)}
+.running,.in_progress,.queued,.pending,.reports,.collected{color:var(--run);background:var(--runbg)}
+.skipped,.n\/a,.planned{color:var(--na);background:var(--nabg)}
+.unsupported{color:var(--uns);background:var(--unsbg)}
+table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;color:var(--mute);font-weight:600}.tw{overflow-x:auto}
+.bar{height:8px;background:var(--nabg);border-radius:99px;overflow:hidden;display:flex;margin:6px 0}
+.bar i{display:block;height:100%}.b-pass{background:var(--ok)}.b-fail{background:var(--bad)}.b-unsupported{background:var(--uns)}.b-run{background:var(--run)}.b-skip{background:var(--na)}
+.kpis{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}.kpi{border:1px solid var(--line);border-radius:8px;padding:6px 10px}.kpi b{font-size:18px;display:block}
+.err{color:var(--bad);font-size:12px;word-break:break-word}
+pre{margin:0;max-height:340px;overflow:auto;background:var(--nabg);padding:10px;border-radius:8px;white-space:pre-wrap;word-break:break-word}
+a{color:var(--run)}.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.grid2{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr))}
+details>summary{cursor:pointer;color:var(--mute);font-size:12px;margin-top:6px}
+</style></head><body>
+<header><h1>Pipeline Live Monitor <span id="mach" class="mute"></span></h1>
+<div class="mute"><select id="box" hidden aria-label="runner"></select> <span id="upd">loading…</span> · refresh every <select id="every"><option>3</option><option selected>5</option><option>10</option><option>30</option></select> s</div></header>
+<main id="app"></main>
+<script>window.DASH_LIVE={"repo": "Dineshbabu-Ravichandran/chromium-perf-dashboard", "machines": ["SJ-ripper-2", "SJ-Raptor-1"]};</script>
+<script>
+const E=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const P=s=>`<span class="pill ${E(String(s||"").toLowerCase())}">${E(String(s||"—").toUpperCase())}</span>`;
+const ago=t=>{if(!t)return"";const s=(Date.now()-Date.parse(t))/1000;return s<90?`${s|0}s ago`:s<5400?`${(s/60)|0}m ago`:`${(s/3600).toFixed(1)}h ago`};
+const f2=x=>x==null?"—":(+x).toFixed(2);
+function bar(c,total){if(!total)return"";const seg=(k,cl)=>c[k]?`<i class="${cl}" style="width:${100*c[k]/total}%"></i>`:"";
+ return `<div class="bar">${seg("pass","b-pass")}${seg("fail","b-fail")}${seg("unsupported","b-unsupported")}${seg("running","b-run")}${seg("skipped","b-skip")}</div>`}
+function kpis(c){return `<div class="kpis">${["pass","fail","unsupported","running","pending","skipped","not-run"].filter(k=>c[k]).map(k=>`<div class="kpi">${P(k)}<b>${c[k]}</b></div>`).join("")}</div>`}
+function actions(a){if(!a||!a.runs)return"";const r=a.runs;return `<section class="card"><h2>GitHub Actions</h2>${a.error?`<div class="err">${E(a.error)}</div>`:""}
+<div class="tw"><table><tr><th>workflow</th><th>status</th><th>started</th><th>run</th></tr>${r.map(x=>`<tr><td>${E(x.workflowName)}</td>
+<td>${P(x.status==="completed"?x.conclusion:x.status)}</td><td class="mute">${ago(x.createdAt)}</td><td><a href="${E(x.url)}" target="_blank">#${x.databaseId}</a></td></tr>`).join("")}</table></div></section>`}
+function smoke(list){if(!Array.isArray(list)||!list.length)return"";return `<section class="card"><h2>Smoke tests</h2>${list.map((s,i)=>{
+ const c={};(s.checks||[]).forEach(x=>c[x.status]=(c[x.status]||0)+1);const n=(s.checks||[]).length;
+ const bad=(s.checks||[]).filter(x=>x.status==="fail"||x.status==="not-run"),uns=(s.checks||[]).filter(x=>x.status==="unsupported");
+ const run=(s.checks||[]).find(x=>x.status==="running");
+ return `<div style="margin-top:${i?16:0}px"><div class="row">${P(s.state)} <b>${E(s.key)}</b> <span class="mute">${E(s.machine)} · ${E(s.bundle_id)} · ${E(s.suite)} · ${E(s.iterations)} iter · updated ${ago(s.updated_utc)}</span>
+ ${s.run_url?`<a href="${E(s.run_url)}" target="_blank">Actions run</a>`:""}</div>${bar(c,n)}${kpis(c)}
+ ${run?`<div>Running now: <b>[${E(run.group)}] ${E(run.name)}</b></div>`:""}
+ ${bad.length?`<h3>Failed (${bad.length})</h3><div class="tw"><table><tr><th>stage</th><th>check</th><th>error</th></tr>${bad.map(x=>`<tr><td>${E(x.group)}</td><td>${E(x.name)}</td><td class="err">${E(x.error||x.status)}</td></tr>`).join("")}</table></div>`:""}
+ ${uns.length?`<h3>Unsupported on this CPU (${uns.length}) — expected, listed in profiling.&lt;inst&gt;.unsupported</h3><div class="tw"><table><tr><th>check</th><th>what the tool said</th></tr>${uns.map(x=>`<tr><td>${E(x.name)}</td><td class="mono">${E(x.error||"")}</td></tr>`).join("")}</table></div>`:""}
+ <details ${i?"":"open"}><summary>all ${n} checks</summary><div class="tw"><table><tr><th>stage</th><th>check</th><th>status</th><th>s</th><th>detail / error</th></tr>
+ ${(s.checks||[]).map(x=>`<tr><td>${E(x.group)}</td><td>${E(x.name)}</td><td>${P(x.status)}</td><td class="mute">${E(x.seconds??"")}</td><td>${x.detail?E(x.detail):""}${x.error&&x.status!=="pass"?`<div class="err">${E(x.error)}</div>`:""}</td></tr>`).join("")}</table></div></details></div>`}).join("")}</section>`}
+function runs(list){if(!Array.isArray(list)||!list.length)return"";const st=["sync","build","score","profile","report"];
+ return `<section class="card"><h2>Commit runs</h2><div class="tw"><table><tr><th>run</th>${st.map(s=>`<th>${s}</th>`).join("")}<th></th></tr>${list.map(r=>`<tr>
+ <td><b>${E(r.key)}</b><div class="mute">${E(r.machine)} · Chrome ${E(r.chromium?.chrome_version||"?")} · ${E((r.request||{}).config||"")}</div>${r.error?`<div class="err">${E(r.error)}</div>`:""}</td>
+ ${st.map(s=>{const x=(r.stages||{})[s];return `<td title="${E(x?.detail||"")}">${x?P(x.status):'<span class="mute">—</span>'}${x?.status==="running"?`<div class="mute">${ago(x.started)}</div>`:""}</td>`}).join("")}
+ <td>${r.run_url?`<a href="${E(r.run_url)}" target="_blank">Actions</a>`:""}</td></tr>`).join("")}</table></div></section>`}
+function camps(list){if(!Array.isArray(list)||!list.length)return"";return `<section class="card"><h2>Scoring (campaigns)</h2>${list.map(c=>{
+ const pr=c.progress?`${c.progress[0]}/${c.progress[1]} runs`:"";const pct=c.progress?100*c.progress[0]/c.progress[1]:(c.state==="judged"?100:0);
+ return `<div style="margin-bottom:14px"><div class="row"><b>${E(c.id)}</b> ${P(c.state)} <span class="mute">${E(c.benchmark)} · ${E(c.purpose||"")} · ${E(c.machine||"")} · ${pr} · measured ${c.measured} (+${c.warmup} warm-up)</span>
+ ${c.session_valid===true?P("pass"):c.session_valid===false?P("fail"):""}</div>
+ <div class="bar"><i class="b-run" style="width:${pct}%"></i></div>
+ <table><tr><th>arm</th><th>n</th><th>mean score</th><th>min</th><th>max</th></tr>${(c.arms||[]).map(a=>`<tr><td>${E(a.arm)}</td><td>${a.n}</td><td><b>${f2(a.mean)}</b></td><td>${f2(a.min)}</td><td>${f2(a.max)}</td></tr>`).join("")}</table>
+ ${c.control_ratio!=null?`<div class="mute">control/baseline ${(+c.control_ratio).toFixed(4)} CI [${(c.control_ci||[]).map(x=>(+x).toFixed(4)).join(", ")}]</div>`:""}
+ ${c.session_valid===false?`<div class="err">session invalid: ${E(c.session_reason||"")}</div>`:""}
+ ${c.live&&c.state==="running"?`<div class="mono mute">${E(c.live)}</div>`:""}</div>`}).join("")}</section>`}
+function profs(list){if(!Array.isArray(list)||!list.length)return"";return `<section class="card"><h2>Profiling</h2>${list.map((p,i)=>{
+ const c=p.counts||{};const n=(p.cells||[]).length;const bad=(p.cells||[]).filter(x=>x.status==="fail"),uns=(p.cells||[]).filter(x=>x.status==="unsupported");
+ const sym=(p.cells||[]).filter(x=>x.symbols&&x.symbols.status);const symbad=sym.filter(x=>x.symbols.status==="fail");
+ return `<div style="margin-top:${i?16:0}px"><div class="row"><b>${E(p.prof_id)}</b> ${P(p.state)} <span class="mute">${E(p.bundle_id)} · ${E(p.machine||"")} · ${n} cells · updated ${ago(p.updated_utc)}</span></div>${bar(c,n)}${kpis(c)}
+ ${p.current?`<div>Running now: <b>${E(p.current.suite)} · ${E(p.current.instrument)} ${E(p.current.config)}</b> (rep ${E(p.current.repeat)})</div>`:""}
+ ${sym.length?`<div>Chrome symbols: ${symbad.length?P("fail"):P("pass")} <span class="mute">${sym.length-symbad.length}/${sym.length} uProf/ETW cells resolved Chrome function names</span></div>`:""}
+ ${bad.length?`<h3>Failed cells (${bad.length})</h3><div class="tw"><table><tr><th>suite</th><th>instrument</th><th>config</th><th>error</th></tr>${bad.slice(0,60).map(x=>`<tr><td>${E(x.suite)}</td><td>${E(x.instrument)}</td><td>${E(x.config)}</td><td class="err">${E(x.error||("rc="+x.rc))}</td></tr>`).join("")}</table></div>`:""}
+ ${uns.length?`<h3>Unsupported on this CPU (${uns.length}) — expected</h3><div class="mute">${[...new Set(uns.map(x=>x.instrument+" "+x.config))].map(E).join(" · ")}</div>`:""}
+ ${(p.report_runs||[]).length?`<h3>Reports</h3><div class="row">${p.report_runs.map(r=>`<span title="${E(r.error||"")}">${P(r.rc===0?"pass":r.rc==null?"skipped":"fail")} ${E(r.kind)} ${E(r.suite)}</span>`).join(" ")}</div>`:""}
+ <details><summary>all cells</summary><div class="tw"><table><tr><th>suite</th><th>inst</th><th>config</th><th>status</th><th>s</th><th>symbols</th></tr>${(p.cells||[]).map(x=>`<tr><td>${E(x.suite)}</td><td>${E(x.instrument)}</td><td>${E(x.config)}</td><td>${P(x.status)}</td><td class="mute">${E(x.seconds??"")}</td><td>${x.symbols?`${P(x.symbols.status)} <span class="mute">${E(x.symbols.resolved??"")}/${E(x.symbols.chrome_frames??"")}</span>`:""}</td></tr>`).join("")}</table></div></details></div>`}).join("")}</section>`}
+function disk(d){if(!Array.isArray(d)||!d.length)return"";const low=d.filter(r=>r.status!=="pass");
+ return `<section class="card"><h2>Storage ${low.length?P("fail"):P("pass")}</h2>${low.map(r=>`<div class="err">${E(r.error)}</div>`).join("")}
+ <div class="tw"><table><tr><th>stage</th><th>drive</th><th>free</th><th>needs</th><th>drive needs (all stages)</th><th></th></tr>${d.map(r=>`<tr><td>${E(r.stage)}</td><td>${E(r.drive)}</td>
+ <td><b>${E(r.free_gb)}</b> / ${E(r.total_gb)} GB</td><td>${E(r.need_gb)} GB</td><td>${E(r.drive_need_gb)} GB</td><td>${P(r.status)}</td></tr>`).join("")}</table></div></section>`}
+function log(l){if(!l||!l.path)return"";return `<section class="card"><h2>Live log <span class="mute mono">${E(l.path)} · written ${E(l.age_s)}s ago</span></h2><pre class="mono">${E((l.lines||[]).join("\n"))}</pre></section>`}
+// Static (GitHub Pages) mode: window.DASH_LIVE = {repo, machines}. Each runner force-pushes its
+// state.json to branch live-<machine>; read it through the API (fresh; 60 req/h per viewer IP,
+// hence the >= 75 s refresh) and fall back to raw.githubusercontent.com (up to 5 min stale).
+const LIVE=window.DASH_LIVE||null;let machines=null;
+async function liveState(){const gh="https://api.github.com/repos/"+LIVE.repo;
+ if(!machines){try{const r=await fetch(gh+"/branches?per_page=100");machines=r.ok?(await r.json()).map(b=>b.name).filter(n=>n.startsWith("live-")).map(n=>n.slice(5)):null}catch(e){}
+  machines=machines&&machines.length?machines:(LIVE.machines||[]);const sel=document.getElementById("box");
+  sel.innerHTML=machines.map(m=>`<option>${E(m)}</option>`).join("");sel.hidden=false;
+  try{const k=localStorage.getItem("dash-box");if(machines.includes(k))sel.value=k}catch(e){}}
+ const m=document.getElementById("box").value;if(!m)throw new Error("no runner has published its state yet");
+ let r,via="GitHub API";try{r=await fetch(`${gh}/contents/state.json?ref=live-${encodeURIComponent(m)}`,{headers:{Accept:"application/vnd.github.raw+json"},cache:"no-cache"})}catch(e){r=null}
+ if(!r||!r.ok){via="raw file (API rate limit reached: may be up to 5 min old)";r=await fetch(`https://raw.githubusercontent.com/${LIVE.repo}/live-${encodeURIComponent(m)}/state.json?t=${Date.now()}`,{cache:"no-store"})}
+ if(!r.ok)throw new Error(`no state for ${m} (HTTP ${r.status})`);const s=await r.json();s._via=via;return s}
+if(LIVE){const ev=document.getElementById("every");ev.innerHTML="<option>75</option><option>120</option><option>300</option>";
+ document.getElementById("box").onchange=e=>{try{localStorage.setItem("dash-box",e.target.value)}catch(_){}tick()}}
+let timer;async function tick(){try{const s=LIVE?await liveState():await (await fetch("api/state",{cache:"no-store"})).json();
+ document.getElementById("mach").textContent="· "+s.machine+(LIVE?"":" · "+s.root);
+ const age=s.published_utc?(Date.now()-Date.parse(s.published_utc))/1000:0;
+ document.getElementById("upd").innerHTML=LIVE?`published ${ago(s.published_utc)} via ${E(s._via)}${age>300?' · <span class="err">publisher offline or idle (no update for '+((age/60)|0)+' min)</span>':""}`:"updated "+E(s.now);
+ document.getElementById("app").innerHTML=disk(s.disk)+actions(s.actions)+smoke(s.smoke)+`<div class="grid2">${camps(s.campaigns)}${profs(s.profiles)}</div>`+runs(s.runs)+log(s.log);
+}catch(e){document.getElementById("upd").textContent=(LIVE?"cannot load live state: ":"dashboard server unreachable: ")+e}
+ clearTimeout(timer);timer=setTimeout(tick,1000*+document.getElementById("every").value)}
+document.getElementById("every").onchange=tick;tick();
+</script></body></html>
